@@ -1,0 +1,465 @@
+<html>
+<title>JS-Mario</title>
+<style>
+  body {font:bold 18px verdana; background:black; color:white;}
+  #main {border:1px solid #aaa; width:640px; height:480px; position:absolute; top:50%; left:50%; margin-top:-240px; margin-left:-320px; background:#5c94fc; overflow:hidden;}
+  #content {position:absolute; top:0px; left:-100px;}
+  .str {position:absolute; top:2px; font:bold 14px Arial;}
+  .mario {left:32px;}
+  .world {left:300px;}
+  .time {left:570px;}
+  .sprite {width:32px; height:32px; position:absolute; background-image:url(images/sprites.png); background-repeat: no-repeat;}
+  embed {visibility:hidden; width:1px; height:1px;}
+</style>
+<script src="jquery.js"></script>
+<script>
+  var playsounds = true;
+  var keys = {39: "right", 37: "left", 38: "up", 40: "down", 32: "jump"};
+  var sprite_pos = {
+    bricks : [{static:true}, [0, 0], [0, 1], [0, 2], [0, 3]],
+    block0 : [{static:true}, [1, 0], [1, 1]],
+    block1 : [{static:true}, [2, 0], [2, 1]],
+    qmark0 : [{static:true, animated:true, speed:10}, [4, 0], [4, 1], [4, 2], [4, 1]],
+    qmark1 : [{static:true, animated:true, speed:10}, [5, 0], [5, 1], [5, 2], [5, 1]],
+    centf  : [{}, [5, 0], [5, 1], [5, 2], [5, 3]],
+    cent0  : [{}, [1, 2], [2, 2], [3, 2]],
+    dune0  : [{block:true, x:0, y:6, sizex:3, sizey:1}],
+    dune1  : [{block:true, x:3, y:5, sizex:5, sizey:2}],
+    sky0   : [{block:true, x:0, y:7, sizex:3, sizey:2}],
+    sky1   : [{block:true, x:0, y:9, sizex:3, sizey:2}],
+    sky2   : [{block:true, x:3, y:7, sizex:4, sizey:2}],
+    sky3   : [{block:true, x:3, y:9, sizex:4, sizey:2}],
+    sky4   : [{block:true, x:7, y:7, sizex:2, sizey:2}],
+    sky5   : [{block:true, x:7, y:9, sizex:2, sizey:2}],
+    pipe0  : [{block:true, x:18, y:3, sizex:2, sizey:2, static:true}],
+    pipe0b : [{block:true, x:18, y:4, sizex:2, sizey:1, static:true}],
+    mario  : [{
+      animations: {
+        stay: [[9, 4]],
+        run: [[12, 4], [13, 4], [14, 4], [13, 4]],
+        jump: [[15, 4]],
+        die: [[10, 4]],
+        stop: [[11, 4]],
+        big_stay: [[10, 6]],
+        big_run: [[12, 6], [13, 6], [14, 6], [13, 6]],
+        big_jump: [[15, 6]],
+        big_stop: [[11, 6]]
+      }
+    }, [9, 4]],
+    enemy0 : [{
+      animations: {
+        stay: [[10, 12]],
+        run: [[10, 12], [11, 12]],
+        die: [[12, 12]]
+      }
+    }, [10, 12]],
+    plant : [{
+      block: true, x: 16, y: 7, sizex: 1, sizey: 2,
+      animations: {
+        run: [[16, 7], [17, 7]]
+      }
+    }]
+  };
+  var idgenerater = 0, soundgenerator = 0;
+  var sprites = [], enemies = [], animated_sprites = [], animated_bricks = [];
+  var mario = null, screen_pos, gtimer = 0;
+  var field = null;
+
+  /*
+   * Internal functions
+   */
+  function playsound(name, loop, id) {
+    if (!playsounds) return;
+    //if (!id) id = soundgenerator++;
+    if (!id) id = name.replace(".mid", "").replace(".wav", "");
+    if ($('#snd_' + id)[0]) {
+      if (jQuery.browser.mozilla || jQuery.browser.opera) $('#snd_' + id)[0].src = 'res/' + name;
+      else $('#snd_' + id)[0].Play();
+    } else
+      $('body').append($("<embed id='snd_" + id + "' src='res/" + name + "' loop='" + (loop || false) + "'></embed>"));
+    return id;
+  }
+
+  function stopsound(id) {
+    //$('#snd_' + id)[0].Stop();
+    //if (!jQuery.browser.msie) 
+    //$('#snd_' + id)[0].Rewind();
+    $('#snd_' + id).remove();
+  }
+
+  function sprite(x, y, name, num, id) {
+    if (!id) id = 'sprite' + idgenerater++;
+    if (!num) num = 0;
+    var sprite = sprite_pos[name];
+    var attrs = sprite[0];
+    pos = sprite[num + 1];
+    var s = $("<div class='sprite'></div>");
+    s.id = id;
+    s.css({left: x*32, top: y*32});
+    ns = {dom: s, attrs: attrs, num: num, sprite: sprite, x: x, y: y, name: name};
+    // animated
+    if (attrs.animated) {
+      animated_sprites[animated_sprites.length] = ns;
+      ns.anim_frame = Math.random()*32;
+    }
+    if (attrs.block) {
+      // sprites block
+      s.css({backgroundPosition: "-" + attrs.x*32 + "px -" + attrs.y*32 + "px"});
+      s.css({width: attrs.sizex*32 + "px", height: attrs.sizey*32 + "px"});
+    } else
+      sprite_update(ns);
+    //
+    sprites[id] = ns;
+    if (attrs.static) {
+      field[y][x] = ns;
+      if (attrs.block) {
+        for (var ix=0; ix<attrs.sizex; ix++)
+          for (var iy=0; iy<attrs.sizex; iy++)
+            field[y+iy][x+ix] = ns;
+      }
+    }
+    $('#content').append(s);
+    return ns;
+  }
+
+  function sprite_update(s) {
+    pos = s.sprite[s.num + 1];
+    s.dom.css({backgroundPosition: "-" + pos[0]*32 + "px -" + pos[1]*32 + "px"});
+  }
+
+  function sprite_move(s, dx, dy) {
+    s.x+= dx;
+    s.y+= dy;
+    s.dom.css({left: s.x*32, top: s.y*32});
+  }
+
+  function enemy(x, y, name, side) {
+    var e = sprite(x, y, name);
+    e.orig_y = y;
+    e.side = side || "left";
+    e.anim_frame = 0;
+    enemies[enemies.length] = e;
+  }
+
+  /*
+   * Initialize functions
+   */
+  function load() {
+    var b = $("<div id='main' style='display:none'><div id='content'></div></div>");
+    $('body').append(b);
+    b.append($("<div class='str mario'>MARIO<br />000000</div>"));
+    b.append($("<div class='str world'>WORLD<br />&nbsp; &nbsp;&nbsp;1-1</div>"));
+    b.append($("<div class='str time'>TIME<br /></div>"));
+    init();
+    document.onkeydown = function(e) {
+      var eventInstance = window.event ? event : e;
+      var i = eventInstance.charCode ? eventInstance.charCode : eventInstance.keyCode;
+      keys[keys[i] || "any"] = true;
+    }
+    document.onkeyup = function(e) {
+      var eventInstance = window.event ? event : e;
+      var i = eventInstance.charCode ? eventInstance.charCode : eventInstance.keyCode;
+      keys[keys[i] || "any"] = false;
+    }
+    setInterval("tick()", 20);
+  }
+  $(document).ready(load);
+
+  function init() {
+    for (var i in sprites)
+      sprites[i].dom.remove();
+    sprites = {};
+    animated_sprites = [];
+    animated_bricks = [];
+    enemies = [];
+    field = {};
+    for (var i=0; i<15; i++) field[i] = {};
+    animation_timer = 0;
+    sprite(12, 6, "sky2");
+    sprite(2, 3, "sky0");
+    sprite(25, 4, "sky0");
+    sprite(32, 8, "sky4");
+    sprite(40, 5, "sky2");
+    sprite(47, 2, "sky0");
+    sprite(55, 7, "sky4");
+    sprite(65, 6, "sky2");
+    sprite(3, 12, "dune1");
+    sprite(22, 13, "dune0");
+
+    enemy(30.5, 10, "plant", "up");
+    enemy(40.5, 8, "plant", "up");
+    sprite(19, 11, "pipe0");
+    sprite(19, 13, "pipe0b");
+    sprite(30, 12, "pipe0");
+    sprite(40, 10, "pipe0");
+    sprite(40, 12, "pipe0b");
+    sprite(40, 13, "pipe0b");
+
+    sprite(48, 13, "block0");
+    sprite(49, 12, "block0");
+    sprite(49, 13, "block0");
+
+    sprite(13, 10, "bricks");
+    sprite(14, 10, "qmark0");
+    sprite(15, 10, "bricks");
+
+    sprite(23, 8, "bricks");
+    sprite(24, 8, "bricks");
+    sprite(25, 8, "bricks");
+    sprite(26, 8, "bricks");
+    sprite(26, 5, "block0");
+    sprite(27, 5, "block0");
+    sprite(28, 5, "block0");
+
+    enemy(14, 13, "enemy0", "right");
+    enemy(25, 13, "enemy0", "right");
+    enemy(46, 13, "enemy0", "right");
+    for (var y=14; y<15; y++)
+      for (var x=0; x<32; x++) {
+        sprite(x, y, "block1", y == 14 ? 0 : 1);
+        sprite(x + 36, y, "block1", y == 14 ? 0 : 1);
+      }
+    mario = sprite(2, 5, "mario");
+    mario.new_state = "stay";
+    mario.accy = 0;
+    mario.speedy = 0;
+    $('#main').fadeIn();
+    screen_pos = 0;
+    $('#content').css({left: -screen_pos + 'px'});
+    setTimeout('playsound("smbtheme.mid", true, "main")', 500);
+  }
+
+  /*
+   * Update functions
+   */
+  function animation_update() {
+    // sprites
+    for (var i in animated_sprites) {
+      var s = animated_sprites[i];
+      if (!s || !s.attrs.animated || s.anim_frame-- > 0) continue;
+      s.anim_frame = s.attrs.speed;
+      s.num++;
+      if (s.num >= s.sprite.length - 1) s.num = 0;
+      sprite_update(s);
+    }
+    // bricks
+    for (var i in animated_bricks) {
+      var b = animated_bricks[i];
+      if (!b) continue;
+      b.speedy+= b.accy > 0.5 ? 0.5 : (b.accy < -0.5 ? -0.5 : b.accy);
+      b.accy+= 0.05;
+      if (b.y <= b.orig_y) {
+        if (b.y + b.speedy <= b.orig_y)
+          sprite_move(b, 0, b.speedy);
+        else {
+          sprite_move(b, 0, b.orig_y-b.y);
+          animated_bricks[i] = null;
+        }
+      }
+    }
+    // enemies
+    for (var i in enemies) {
+      if (!enemies[i]) continue;
+      var e = enemies[i];
+      if (e.anim_timer-- >= 0) continue;
+      e.anim_timer = 3;
+      if (!e.state) e.state = "run";
+      if (e.name != "plant" || gtimer % 2 == 0) {
+        if (++e.anim_frame >= e.attrs.animations[e.state].length)
+          e.anim_frame = 0;
+        var pos = e.attrs.animations[e.state][e.anim_frame];
+        e.dom.css({backgroundPosition: "-" + pos[0]*32 + "px -" + (pos[1] + (e.attrs_twosided && e.side == "left" ? 1 : 0))*32 + "px"});
+      }
+      if (e.state == "die") {
+        if (e.die_timer-- > 0) continue;
+        e.dom.remove();
+        enemies[i] = null;
+      } else if (e.name == "plant" && e.state == "run") {
+        // plant enemy
+        if (mario.state != "die") {
+          if (Math.abs(mario.x - e.x) <= 1 && (Math.abs(mario.y - e.y) < 0.4 || (mario.y - e.y > 0 && mario.y - e.y < 2))) {die(); return;}
+        }
+        if (!e.side) e.side = "down";
+        if (!e.timer) e.timer = 0;
+        if (e.wait_timer > 0) {
+          if (Math.abs(mario.x - e.x) > 1) e.wait_timer--;
+          continue;
+        }
+        if (e.timer-- <= 0) {
+          e.side = e.side == "down" ? "up" : "down";
+          e.timer = 16*2;
+          e.wait_timer = 8;
+        }
+        if (e.side == "down")
+          sprite_move(e, 0, 0.125/2);
+        else if (e.side == "up")
+          sprite_move(e, 0, -0.125/2);
+      } else if (e.state == "run") {
+        // left/right walking enemy
+        if (e.side == "left") {
+          if (e.x <= 1 || field[Math.floor(e.y)][Math.floor(e.x - 0.125)] || field[Math.ceil(e.y)][Math.floor(e.x - 0.125)])
+            e.side = "right";
+          else
+            sprite_move(e, -0.125, 0);
+        } else if (e.side == "right") {
+          if (field[Math.floor(e.y)][Math.floor(e.x + 1)] || field[Math.ceil(e.y)][Math.floor(e.x + 1)])
+            e.side = "left";
+          else
+            sprite_move(e, 0.125, 0);
+        }
+        if (mario.state != "die") {
+          if (mario.state == "jump" && Math.abs(mario.x - e.x) < 1 && mario.y - e.y < -0.25  && mario.y - e.y > -1.25) {
+            e.state = "die";
+            e.die_timer = 3;
+            mario.speedy = -mario.speedy*0.5;
+            playsound("stomp.wav");
+          } else if (Math.abs(mario.x - e.x) < 1 && Math.abs(mario.y - e.y) < 1) die();
+        }
+      }
+    }
+  }
+
+  function poke_brick(brick) {
+    if (brick.name != "bricks" && brick.name != "qmark0" && brick.name != "qmark!") return;
+    var n = animated_bricks.length;
+    for (var i in animated_bricks)
+      if (!animated_bricks[i]) {
+        n = i;
+        break;
+      }
+    brick.accy = -0.1;
+    brick.speedy = 0;
+    if (!brick.orig_y) brick.orig_y = brick.y;
+    animated_bricks[n] = brick;
+  }
+
+  function die() {
+    stopsound("main");
+    mario.state = "die";
+    pos = mario.attrs.animations[mario.state][0];
+    mario.dom.css({backgroundPosition: "-" + pos[0]*32 + "px -" + (pos[1] + (mario.side == "left" ? 4 : 0))*32 + "px"});
+    playsound("death.mid");
+    mario.speedy = 0;
+    mario.accy = -4;
+    mario.die_timer = 40;
+    mario.restart_timer = 50;
+  }
+
+  function mario_run() {
+    if (mario.state == "die") {
+      if (mario.die_timer > 0) {mario.die_timer--; return;}
+      if (mario.y < 15) {
+        if (mario.accy < 0.5)
+          mario.accy+= 0.5;
+        mario.speedy+= 0.02*mario.accy;
+        sprite_move(mario, 0, mario.speedy > 0.5 ? 0.5 : (mario.speedy < -0.5 ? -0.5 : mario.speedy));
+      } else {
+        if (mario.restart_timer-- > 0) return;
+        init();
+      }
+      return;
+    }
+    mario.new_state = "stay";
+    mario.alt_state = "stay";
+    if (keys.left) {
+      // run left
+      if (mario.y < 1 || (!field[Math.floor(mario.y)][Math.floor(mario.x - 0.25)] && !field[Math.ceil(mario.y)][Math.floor(mario.x - 0.25)])) {
+        mario.new_state = "run";
+        mario.new_side = "left";
+      }
+    } else if (keys.right) {
+      // run right
+      if (mario.y < 1 || (!field[Math.floor(mario.y)][Math.floor(mario.x + 1)] && !field[Math.ceil(mario.y)][Math.floor(mario.x + 1)])) {
+        mario.new_state = "run";
+        mario.new_side = "right";
+      }
+    } else if (mario.state == "run")
+      mario.new_state = "stay";
+
+    if (mario.y >= 14) return die();
+    // check fall
+    if (mario.y < 0 || (!field[Math.floor(mario.y) + 1][Math.floor(mario.x)] && !field[Math.floor(mario.y) + 1][Math.ceil(mario.x)])) {
+      // fall down
+      mario.alt_state = mario.new_state;
+      mario.new_state = "jump";
+      mario.side = mario.new_side;
+      if (mario.accy < 1)
+        mario.accy+= 0.5;
+    } else if (mario.accy < 0) {
+      mario.new_state = "jump";
+    } else {
+      if (mario.y != Math.floor(mario.y))
+        sprite_move(mario, 0, Math.floor(mario.y) - mario.y);
+      mario.speedy = 0;
+    }
+
+    if (keys.jump && mario.new_state != "jump" && mario.speedy == 0) {
+      keys.jump = false;
+      playsound("jumpsmall.wav");
+      mario.accy = -3.5;
+      mario.new_state = "jump";
+    }
+
+    if (mario.anim_timer-- >= 0) return;
+    mario.anim_timer = 0;
+    // check way
+    if ((mario.new_state == "run" || mario.alt_state == "run") && mario.new_side == "left" && mario.x <= 1) {
+      if (mario.alt_state == "run") mario.alt_state = "stay";
+      else mario.new_state = "stay";
+    }
+    //
+    if (mario.new_state && (mario.state != mario.new_state || mario.side != mario.new_side)) {
+      mario.state = mario.new_state;
+      mario.side = mario.new_side;
+      mario.anim_frame = 0;
+    }
+    if (++mario.anim_frame >= mario.attrs.animations[mario.state].length)
+      mario.anim_frame = 0;
+    pos = mario.attrs.animations[mario.state][mario.anim_frame];
+    mario.dom.css({backgroundPosition: "-" + pos[0]*32 + "px -" + (pos[1] + (mario.side == "left" ? 4 : 0))*32 + "px"});
+    if (mario.state == "run" || mario.alt_state == "run") {
+      if (mario.side == "left" && (mario.y < 1 || (!field[Math.floor(mario.y)][Math.floor(mario.x - 0.25)] && !field[Math.ceil(mario.y)][Math.floor(mario.x - 0.25)])))
+        sprite_move(mario, -0.25, 0);
+      else if (mario.side == "right" && (mario.y < 1 || (!field[Math.floor(mario.y)][Math.floor(mario.x + 1)] && !field[Math.ceil(mario.y)][Math.floor(mario.x + 1)])))
+        sprite_move(mario, 0.25, 0);
+    }
+    if (mario.state == "jump") {
+      mario.speedy+= 0.075*mario.accy;
+      var dy = mario.speedy > 0.5 ? 0.5 : (mario.speedy < -0.5 ? -0.5 : mario.speedy);
+      if (mario.speedy < 0 && (mario.y > 1 && (field[Math.floor(mario.y + dy)][Math.floor(mario.x)] || field[Math.floor(mario.y + dy)][Math.ceil(mario.x)]))) {
+        if (!field[Math.floor(mario.y + dy)][Math.floor(mario.x)] && field[Math.floor(mario.y + dy)][Math.ceil(mario.x)] && mario.x % 1 < 0.5) {
+          mario.x = Math.floor(mario.x);
+        } else if (field[Math.floor(mario.y + dy)][Math.floor(mario.x)] && !field[Math.floor(mario.y + dy)][Math.ceil(mario.x)] && mario.x % 1 > 0.5) {
+          mario.x = Math.ceil(mario.x);
+        } else {
+          if (mario.x%1 <= 0.5 && field[Math.floor(mario.y + dy)][Math.floor(mario.x)])
+            poke_brick(field[Math.floor(mario.y + dy)][Math.floor(mario.x)]);
+          else if (field[Math.floor(mario.y + dy)][Math.ceil(mario.x)])
+            poke_brick(field[Math.floor(mario.y + dy)][Math.ceil(mario.x)]);
+          dy = -mario.y % 1;
+          mario.speedy = 0;
+        }
+      }
+      sprite_move(mario, 0, dy);
+      if (mario.y >= 14) return die();
+      if (mario.y >= 0 && (field[Math.floor(mario.y) + 1][Math.floor(mario.x)] || field[Math.floor(mario.y) + 1][Math.ceil(mario.x)]))
+        if (mario.y != Math.floor(mario.y))
+          sprite_move(mario, 0, Math.floor(mario.y) - mario.y);
+    }
+
+    // side-scroll
+    if (mario.x*32 < screen_pos + 240 && mario.x*32 >= 240) screen_pos = mario.x*32 - 240;
+    if (mario.x*32 > screen_pos + 640 - 304) screen_pos = mario.x*32  - (640 - 304);
+    $('#content').css({left: -screen_pos + 'px'});
+  }
+
+  function tick() {
+    gtimer = (gtimer + 1) % 1000;
+    if (mario) {
+      if (mario.state != "die") animation_update();
+      mario_run();
+    }
+  }
+</script>
+<body></body>
+</html>
